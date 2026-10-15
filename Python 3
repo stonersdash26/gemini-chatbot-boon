@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""
+Simple GitHub repository audit script.
+
+Usage:
+  export GITHUB_TOKEN="ghp_..."
+  python github_repo_audit.py --repo owner/repo --output audit.json
+
+Or:
+  python github_repo_audit.py --repo owner/repo --token YOUR_TOKEN --output audit.json
+"""
+import argparse
+import os
+import sys
+import json
+import requests
+from typing import Optional
+
+API_BASE = "https://api.github.com"
+
+def gh_headers(token: Optional[str]):
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+def api_get(path, token=None, params=None):
+    url = API_BASE + path
+    r = requests.get(url, headers=gh_headers(token), params=params, timeout=15)
+    try:
+        body = r.json()
+    except Exception:
+        body = r.text
+    return {"status_code": r.status_code, "url": url, "body": body, "headers": dict(r.headers)}
+
+def try_contents(repo, path, token=None):
+    return api_get(f"/repos/{repo}/contents/{path}", token=token)
+
+def collect_repo_audit(repo, token=None):
+    out = {}
+    # Repo metadata
+    out["repo"] = api_get(f"/repos/{repo}", token=token)
+
+    if out["repo"]["status_code"] != 200:
+        return out
+
+    default_branch = out["repo"]["body"].get("default_branch")
+
+    # Branch protection for default branch (requires admin permission)
+    if default_branch:
+        out["default_branch_protection"] = api_get(f"/repos/{repo}/branches/{default_branch}/protection", token=token)
+    else:
+        out["default_branch_protection"] = {"status_code": None, "body": "no-default-branch"}
+
+    # Recent commits on default branch
+    if default_branch:
+        out["recent_commits"] = api_get(f"/repos/{repo}/commits", token=token, params={"sha": default_branch, "per_page": 5})
+        # If commits retrieved, check verification flags (best-effort)
+        if isinstance(out["recent_commits"]["body"], list):
+            commits_summary = []
+            for c in out["recent_commits"]["body"]:
+                commit_info = {
+                    "sha": c.get("sha"),
+                    "author": c.get("commit", {}).get("author", {}).get("name"),
+                    "date": c.get("commit", {}).get("author", {}).get("date"),
+                    "message": (c.get("commit", {}).get("message") or "").splitlines()[0:1],
+                    "verification": c.get("commit", {}).get("verification")
+                }
+                commits_summary.append(commit_info)
+            out["recent_commits"]["summary"] = commits_summary
+
+    # Open PRs and issues
+    out["open_pulls"] = api_get(f"/repos/{repo}/pulls", token=token, params={"state": "open", "per_page": 100})
+    out["open_issues"] = api_get(f"/repos/{repo}/issues", token=token, params={"state": "open", "per_page": 100})
+
+    # Collaborators (may be paginated; this fetches up to 100)
+    out["collaborators"] = api_get(f"/repos/{repo}/collaborators", token=token, params={"per_page": 100})
+
+    # Teams with access (requires repo in org)
+    out["teams"] = api_get(f"/repos/{repo}/teams", token=token, params={"per_page": 100})
+
+    # CODEOWNERS common locations
+    codeowners_paths = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"]
+    out["codeowners"] = {}
+    for p in codeowners_paths:
+        res = try_contents(repo, p, token=token)
+        out["codeowners"][p] = {"status_code": res["status_code"]}
+        if res["status_code"] == 200 and isinstance(res["body"], dict) and "content" in res["body"]:
+            # content is base64-encoded by GitHub API; leave it raw for now
+            out["codeowners"][p]["content_present"] = True
+            out["codeowners"][p]["name"] = res["body"].get("name")
+        else:
+            out["codeowners"][p]["content_present"] = False
+
+    # Attempt to query secret scanning alerts (permissions required)
+    out["secret_scanning_alerts"] = api_get(f"/repos/{repo}/secret-scanning/alerts", token=token, params={"per_page": 50})
+
+    # Attempt to query code scanning alerts (permissions required)
+    out["code_scanning_alerts"] = api_get(f"/repos/{repo}/code-scanning/alerts", token=token, params={"per_page": 50})
+
+    # Attempt to query Dependabot/vulnerability alerts (best-effort)
+    # Note: some endpoints return 204 for enabled but no content or require special permissions.
+    out["vulnerability_alerts"] = api_get(f"/repos/{repo}/dependabot/alerts", token=token, params={"per_page": 50})
+
+    # Actions permissions
+    out["actions_permissions"] = api_get(f"/repos/{repo}/actions/permissions", token=token)
+
+    # Branch list summary (top 50)
+    out["branches"] = api_get(f"/repos/{repo}/branches", token=token, params={"per_page": 50})
+
+    return out
+
+def main():
+    parser = argparse.ArgumentParser(description="GitHub repository audit (basic checks).")
+    parser.add_argument("--repo", required=True, help="Repository in owner/repo format")
+    parser.add_argument("--token", required=False, help="GitHub token (or set GITHUB_TOKEN env var)")
+    parser.add_argument("--output", required=False, default="audit_output.json", help="Output JSON file")
+    args = parser.parse_args()
+
+    token = args.token or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("Warning: No GITHUB_TOKEN provided. Many endpoints will be rate-limited or forbidden.", file=sys.stderr)
+
+    result = collect_repo_audit(args.repo, token=token)
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, sort_keys=True)
+
+    print(f"Audit complete — results written to {args.output}")
+    # print quick summary
+    repo_meta = result.get("repo", {})
+    if repo_meta.get("status_code") == 200:
+        name = repo_meta["body"].get("full_name")
+        visibility = "private" if repo_meta["body"].get("private") else "public"
+        default_branch = repo_meta["body"].get("default_branch")
+        print(f"{name} ({visibility}) — default branch: {default_branch}")
+    else:
+        print(f"Repo lookup returned {repo_meta.get('status_code')} — inspect {args.output}")
+
+if __name__ == "__main__":
+    main()

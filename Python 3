@@ -137,4 +137,4 @@ def main():
         print(f"Repo lookup returned {repo_meta.get('status_code')} — inspect {args.output}")
 
 if __name__ == "__main__":
-    main()
+    main()python audit.py verify --ledger blackhole_audit.db --secret "your_shared_secret" --state state.json

@@ -184,3 +184,44 @@ def main():
                     "current_state_matches_latest_snapshot": ok,
                     "latest_state_root": latest["state_root"]
                 }, sort_keys=True, indent=2))
+import sqlite3
+
+def inspect_ledger_and_print_summary():
+    conn = sqlite3.connect("docket_ledger.db")
+    cursor = conn.cursor()
+    
+    # Retrieve all blocks from ledger
+    cursor.execute("SELECT id, timestamp, previous_hash, block_hash, data FROM blocks ORDER BY id ASC;")
+    blocks = cursor.fetchall()
+    conn.close()
+    
+    print("=" * 70)
+    print("CRYPTOGRAPHIC LEDGER INSPECTION & REPORT SUMMARY")
+    print("=" * 70)
+    
+    prev_hash = "0" * 64
+    chain_valid = True
+    
+    for block in blocks:
+        b_id, timestamp, p_hash, b_hash, data = block
+        print(f"Block ID:      {b_id}")
+        print(f"Timestamp:     {timestamp}")
+        print(f"Previous Hash: {p_hash}")
+        print(f"Block Hash:    {b_hash}")
+        print(f"Payload Data:  {data}")
+        print("-" * 70)
+        
+        if b_id > 1 and p_hash != prev_hash:
+            chain_valid = False
+            print(f"  [!] CRITICAL: Chain mismatch detected at Block #{b_id}")
+            
+        prev_hash = b_hash
+        
+    if chain_valid:
+        print("Ledger Status: Immutable chain verified successfully. All cryptographic links secure.")
+    else:
+        print("Ledger Status: Integrity compromised.")
+    print("=" * 70)
+
+if __name__ == "__main__":
+    inspect_ledger_and_print_summary()

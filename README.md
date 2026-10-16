@@ -1,3 +1,32 @@
+{
+  "boundary_submission_audit": {
+    "jurisdiction": "Sullivan County, Indiana (County #77)",
+    "enclave": "Courthouse Room 202, 27 S. Main St., Sullivan, IN",
+    "independent_auditor": "Joshua Ryan Boone",
+    "target_entity": "Sullivan County Municipal Boundary & Retention Controls",
+    "evaluations": [
+      {
+        "official_id": 1,
+        "boundary_id": "voting_window_days",
+        "proposed_value": 30,
+        "constraint": "15 <= value <= 45",
+        "validation_status": "PASSED",
+        "ledger_action": "COMMITTED_AND_LOGGED"
+      },
+      {
+        "official_id": 2,
+        "boundary_id": "warrant_retention_hours",
+        "proposed_value": 12,
+        "constraint": "24 <= value <= 72",
+        "validation_status": "BREACH_DETECTED",
+        "ledger_action": "BLOCKED_AND_FLAGGED"
+      }
+    ],
+    "circuit_status": "MONITORING_ACTIVE",
+    "timestamp": 1792117500.0
+  }
+}
+
 2026-10-11T20:46:54.7050000Z Requested labels: ubuntu-latest
 2026-10-11T20:46:54.7050000Z Job defined at: openai/codex-security/.github/workflows/node-ci.yml@refs/pull/1602/merge
 2026-10-11T20:46:54.7050000Z Waiting for a runner to pick up this job...

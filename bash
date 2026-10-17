@@ -1,3 +1,7 @@
+git add conduit-audit-ledger-*.json
+git commit -m "chore: add conduit allowance audit ledger with SHA-256 validation"
+git push origin main
+
 npx ts-node audit-conduits.ts
 
 import { ethers } from "ethers";

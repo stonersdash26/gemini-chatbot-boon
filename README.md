@@ -1,4 +1,300 @@
-git clone https://github.com/stonersdash26/gemini-chatbot-boon.git
+*** Add File: db-logger.ts
++import { ethers } from "ethers";
++import * as crypto from "crypto";
++import * as fs from "fs";
++import * as path from "path";
++
++const SEAPORT_1_6_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395";
++const RPC_ENDPOINT = process.env.RPC_ENDPOINT ?? "https://eth.llamarpc.com";
++const DB_PATH = "audit-ledger.db";
++const JSON_LEDGER = "audit-ledger.json";
++
++async function run() {
++  let BetterSqlite3: any = null;
++  try {
++    // eslint-disable-next-line @typescript-eslint/no-var-requires
++    BetterSqlite3 = require("better-sqlite3");
++    console.log("[INFO] better-sqlite3 available — using SQLite persistence.");
++  } catch {
++    console.log("[INFO] better-sqlite3 not available — falling back to JSON ledger.");
++  }
++
++  const provider = new ethers.JsonRpcProvider(RPC_ENDPOINT);
++  const contract = new ethers.Contract(
++    SEAPORT_1_6_ADDRESS,
++    [
++      "event OrderFulfilled(bytes32 indexed orderHash, address indexed offerer, address indexed zone, address recipient)"
++    ],
++    provider
++  );
++
++  const currentBlock = await provider.getBlockNumber();
++  const fromBlock = Math.max(0, currentBlock - 15);
++  console.log(`[AUDIT] Querying blocks ${fromBlock} to ${currentBlock}...`);
++
++  const logs = await contract.queryFilter(contract.filters.OrderFulfilled(), fromBlock, currentBlock);
++  const parsedRecords: any[] = [];
++
++  for (const log of logs) {
++    try {
++      const parsed = contract.interface.parseLog({ topics: [...log.topics], data: log.data });
++      if (!parsed) continue;
++      const record = {
++        blockNumber: log.blockNumber,
++        transactionHash: log.transactionHash,
++        orderHash: parsed.args.orderHash,
++        offerer: parsed.args.offerer,
++        zone: parsed.args.zone,
++        recipient: parsed.args.recipient,
++        timestamp: new Date().toISOString()
++      };
++      const sha256Hash = crypto.createHash("sha256").update(JSON.stringify(record, Object.keys(record).sort())).digest("hex");
++      parsedRecords.push({ ...record, sha256Hash });
++    } catch (e: any) {
++      console.error("[WARN] Failed to parse log:", e?.message ?? e);
++    }
++  }
++
++  if (parsedRecords.length === 0) {
++    console.log("[AUDIT] No new records found in scanned blocks.");
++    return;
++  }
++
++  if (BetterSqlite3) {
++    const db = new BetterSqlite3(DB_PATH);
++    db.prepare(`
++      CREATE TABLE IF NOT EXISTS seaport_audits (
++        id INTEGER PRIMARY KEY AUTOINCREMENT,
++        blockNumber INTEGER,
++        transactionHash TEXT UNIQUE,
++        orderHash TEXT,
++        offerer TEXT,
++        zone TEXT,
++        recipient TEXT,
++        timestamp TEXT,
++        sha256Hash TEXT
++      )
++    `).run();
++
++    const insert = db.prepare(`
++      INSERT OR IGNORE INTO seaport_audits 
++      (blockNumber, transactionHash, orderHash, offerer, zone, recipient, timestamp, sha256Hash)
++      VALUES (@blockNumber, @transactionHash, @orderHash, @offerer, @zone, @recipient, @timestamp, @sha256Hash)
++    `);
++
++    let inserted = 0;
++    for (const r of parsedRecords) {
++      try {
++        insert.run(r);
++        inserted++;
++        console.log(`[PASS] Indexed Tx to SQLite: ${r.transactionHash}`);
++      } catch (err: any) {
++        console.error(`[SKIP] SQLite insert failed: ${err?.message ?? err}`);
++      }
++    }
++    db.close();
++    console.log(`[DATABASE] Committed ${inserted} records to ${DB_PATH}.`);
++  } else {
++    const file = path.resolve(JSON_LEDGER);
++    let existing: any[] = [];
++    if (fs.existsSync(file)) {
++      try {
++        existing = JSON.parse(fs.readFileSync(file, "utf8"));
++        if (!Array.isArray(existing)) existing = [];
++      } catch {
++        existing = [];
++      }
++    }
++
++    const map = new Map(existing.map((it: any) => [it.transactionHash, it]));
++    let added = 0;
++    for (const r of parsedRecords) {
++      if (!map.has(r.transactionHash)) {
++        map.set(r.transactionHash, r);
++        added++;
++        console.log(`[PASS] Indexed Tx to JSON ledger: ${r.transactionHash}`);
++      }
++    }
++
++    const out = Array.from(map.values()).sort((a: any, b: any) => a.id - b.id || (a.blockNumber - b.blockNumber));
++    fs.writeFileSync(file, JSON.stringify(out, null, 2));
++    console.log(`[JSON LEDGER] Appended ${added} new records to ${JSON_LEDGER}.`);
++  }
++}
++
++run().catch((err) => {
++  console.error("[FATAL] db-logger failed:", err?.message ?? err);
++  process.exitCode = 1;
++});
++
+*** Add File: verify-db.ts
++import * as fs from "fs";
++import * as path from "path";
++
++const DB_PATH = "audit-ledger.db";
++const JSON_LEDGER = "audit-ledger.json";
++
++function verify() {
++  try {
++    // eslint-disable-next-line @typescript-eslint/no-var-requires
++    const BetterSqlite3 = require("better-sqlite3");
++    const db = new BetterSqlite3(DB_PATH, { readonly: true });
++    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table';").all();
++    console.log("[PASS] Connected to SQLite Ledger. Tables:", tables.map((t: any) => t.name));
++    const countRow = db.prepare("SELECT COUNT(*) as count FROM seaport_audits").get();
++    console.log("[PASS] Total Verified Records in Ledger:", countRow.count);
++    const recent = db.prepare("SELECT blockNumber, transactionHash, timestamp, sha256Hash FROM seaport_audits ORDER BY id DESC LIMIT 5").all();
++    console.log("[PASS] Most Recent Audit Entries:", JSON.stringify(recent, null, 2));
++    db.close();
++    return;
++  } catch {
++    // fall through to JSON
++  }
++
++  const file = path.resolve(JSON_LEDGER);
++  if (!fs.existsSync(file)) {
++    console.error(`[FAIL] No ledger file found (${JSON_LEDGER}). Run 'npx ts-node db-logger.ts' first.`);
++    process.exitCode = 1;
++    return;
++  }
++
++  try {
++    const arr = JSON.parse(fs.readFileSync(file, "utf8"));
++    if (!Array.isArray(arr)) {
++      console.error("[FAIL] Ledger file malformed (not an array).");
++      process.exitCode = 1;
++      return;
++    }
++    console.log("[PASS] Connected to JSON ledger. Total records:", arr.length);
++    const recent = arr.slice(-5).reverse().map((r: any) => ({ blockNumber: r.blockNumber, transactionHash: r.transactionHash, timestamp: r.timestamp, sha256Hash: r.sha256Hash }));
++    console.log("[PASS] Most Recent Audit Entries:", JSON.stringify(recent, null, 2));
++  } catch (e: any) {
++    console.error("[FAIL] Could not read JSON ledger:", e?.message ?? e);
++    process.exitCode = 1;
++  }
++}
++
++verify();
++
+*** Add File: .github/workflows/seaport-audit.yml
++name: Seaport 1.6 Automated Audit Pipeline
++
++on:
++  push:
++    branches: [ "main" ]
++  schedule:
++    - cron: '0 */6 * * *' # Run every 6 hours
++
++permissions:
++  contents: write
++
++jobs:
++  audit:
++    runs-on: ubuntu-latest
++
++    steps:
++      - name: Checkout Repository
++        uses: actions/checkout@v4
++
++      - name: Setup Node.js
++        uses: actions/setup-node@v4
++        with:
++          node-version: '20'
++          cache: 'npm'
++
++      - name: Install Dependencies
++        run: npm install
++
++      - name: Run SQLite Audit Persistence Logger
++        run: npx ts-node db-logger.ts
++        env:
++          RPC_ENDPOINT: ${{ secrets.RPC_ENDPOINT }}
++
++      - name: Verify Local SQLite Database Ledger State
++        run: npx ts-node verify-db.ts
++
++      - name: Commit Updated Audit Ledger to Repository
++        run: |
++          git config --global user.name "Independent Auditor Bot"
++          git config --global user.email "auditor@local.domain"
++          if [ -f audit-ledger.json ]; then
++            git add audit-ledger.json
++          elif [ -f audit-ledger.db ]; then
++            git add audit-ledger.db
++          fi
++          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: automated CI audit ledger sync [skip ci]" && git push)
++
+*** Update File: package.json
++{
++  "name": "gemini-chatbot",
++  "version": "0.1.0",
++  "private": true,
++  "scripts": {
++    "dev": "next dev --turbo",
++    "build": "tsx db/migrate && next build",
++    "start": "next start",
++    "lint": "next lint"
++  },
++  "dependencies": {
++    "@ai-sdk/google": "^0.0.51",
++    "@radix-ui/react-alert-dialog": "^1.1.2",
++    "@radix-ui/react-dialog": "^1.1.2",
++    "@radix-ui/react-dropdown-menu": "^2.1.1",
++    "@radix-ui/react-icons": "^1.3.0",
++    "@radix-ui/react-label": "^2.1.0",
++    "@radix-ui/react-slot": "^1.1.0",
++    "@radix-ui/react-tooltip": "^1.1.2",
++    "@radix-ui/react-visually-hidden": "^1.1.0",
++    "@vercel/analytics": "^1.3.1",
++    "@vercel/blob": "^0.24.1",
++    "@vercel/postgres": "^0.10.0",
++    "ai": "3.4.9",
++    "bcrypt-ts": "^5.0.2",
++    "class-variance-authority": "^0.7.0",
++    "classnames": "^2.5.1",
++    "clsx": "^1.1.1",
++    "date-fns": "^4.1.0",
++    "dotenv": "^16.4.5",
++    "drizzle-orm": "^0.34.0",
++    "eslint-config-prettier": "^9.1.0",
++    "eslint-plugin-tailwindcss": "^3.17.5",
++    "ethers": "^6.13.5",
++    "framer-motion": "^11.3.19",
++    "geist": "^1.3.1",
++    "input-otp": "^1.2.4",
++    "lucide-react": "^0.446.0",
++    "next": "15.5.7",
++    "next-auth": "5.0.0-beta.22",
++    "postgres": "^3.4.4",
++    "react": "19.2.1",
++    "react-dom": "19.2.1",
++    "server-only": "^0.0.1",
++    "sonner": "^1.5.0",
++    "streamdown": "^1.6.7",
++    "swr": "^2.2.5",
++    "tailwind-merge": "^2.5.2",
++    "tailwindcss-animate": "^1.0.7",
++    "ts-node": "^10.9.2",
++    "usehooks-ts": "^1.0.0",
++    "zod": "^3.23.8"
++  },
++  "devDependencies": {
++    "@types/node": "^20",
++    "@types/pdf-parse": "^1.1.4",
++    "@types/react": "^19.2.7",
++    "@types/react-dom": "^19.2.3",
++    "drizzle-kit": "^0.25.0",
++    "eslint": "^8.57.0",
++    "eslint-config-next": "15.5.7",
++    "eslint-import-resolver-typescript": "^3.6.3",
++    "eslint-plugin-import": "^2.31.0",
++    "postcss": "^8",
++    "tailwindcss": "^3.4.1",
++    "tsx": "^4.19.1",
++    "typescript": "^5"
++  }
++}
+*** End Patchgit clone https://github.com/stonersdash26/gemini-chatbot-boon.git
 cd gemini-chatbot-boon
 git checkout -b fix/audit-ci-portableGood — here's a CI-portable "better" patch that avoids native SQLite builds. Behavior:
 - If better-sqlite3 is installed and available, db-logger/verify-db will use it as before.

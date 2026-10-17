@@ -1,0 +1,39 @@
+name: Seaport 1.6 Automated Audit Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 */6 * * *' # Run every 6 hours
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: Install Dependencies
+      run: npm install
+
+    - name: Run SQLite Audit Persistence Logger
+      run: npx ts-node db-logger.ts
+      env:
+        RPC_ENDPOINT: ${{ secrets.RPC_ENDPOINT }}
+
+    - name: Verify Local SQLite Database Ledger State
+      run: npx ts-node verify-db.ts
+
+    - name: Commit Updated Audit Ledger to Repository
+      run: |
+        git config --global user.name "Independent Auditor Bot"
+        git config --global user.email "auditor@local.domain"
+        git add audit-ledger.db
+        git diff --quiet && git diff --staged --quiet || (git commit -m "chore: automated CI audit ledger sync [skip ci]" && git push)

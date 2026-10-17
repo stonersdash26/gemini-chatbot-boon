@@ -1,0 +1,3 @@
+git add audit-summary-*.json generate-report.ts audit-ledger.db
+git commit -m "chore: regenerate cryptographic audit report for latest indexed block range"
+git push origin main

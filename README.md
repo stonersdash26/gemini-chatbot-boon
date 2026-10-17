@@ -1,3 +1,23 @@
+- name: Run SQLite Audit Persistence Logger
+  run: npx tsx db-logger.ts
+  env:
+    RPC_ENDPOINT: ${{ secrets.RPC_ENDPOINT }}
+
+- name: Verify Local SQLite Database Ledger State
+  run: npx tsx verify-db.ts
+
+- name: Commit Updated Audit Ledger to Repository
+  run: |
+    git config --global user.name "Independent Auditor Bot"
+    git config --global user.email "auditor@local.domain"
+
+    if [ -f audit-ledger.db ]; then
+      git add audit-ledger.db
+      git diff --cached --quiet || (git commit -m "chore: automated CI audit ledger sync [skip ci]" && git push)
+    else
+      echo "audit-ledger.db was not created; skipping commit"
+      exit 0
+    fi
 Lib/tokenize.py*** Add File: db-logger.ts
 +import { ethers } from "ethers";
 +import * as crypto from "crypto";

@@ -1,3 +1,4 @@
+github/workflows/bash.yml
 name: Bash script
 
 on:

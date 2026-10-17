@@ -1,0 +1,52 @@
+import { ethers } from "ethers";
+import * as fs from "fs";
+import * as crypto from "crypto";
+
+const SEAPORT_1_6_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395";
+const RPC_ENDPOINT = "https://eth.llamarpc.com";
+
+const ABI = [
+    "event OrderFulfilled(bytes32 indexed orderHash, address indexed offerer, address indexed zone, address recipient)"
+];
+
+async function auditLiveOrderFulfillments() {
+    const provider = new ethers.JsonRpcProvider(RPC_ENDPOINT);
+    const contract = new ethers.Contract(SEAPORT_1_6_ADDRESS, ABI, provider);
+
+    const currentBlock = await provider.getBlockNumber();
+    const fromBlock = currentBlock - 5; // Scan last 5 blocks for telemetry
+
+    console.log(`[AUDIT] Scanning blocks ${fromBlock} to ${currentBlock} for Seaport 1.6 OrderFulfilled events...`);
+
+    const filter = contract.filters.OrderFulfilled();
+    const logs = await contract.queryFilter(filter, fromBlock, currentBlock);
+    const auditLedger: any[] = [];
+
+    for (const log of logs) {
+        const parsed = contract.interface.parseLog({
+            topics: [...log.topics],
+            data: log.data
+        });
+
+        if (parsed) {
+            const record = {
+                blockNumber: log.blockNumber,
+                transactionHash: log.transactionHash,
+                orderHash: parsed.args.orderHash,
+                offerer: parsed.args.offerer,
+                zone: parsed.args.zone,
+                recipient: parsed.args.recipient,
+                timestamp: new Date().toISOString()
+            };
+
+            const sha256Hash = crypto.createHash("sha256").update(JSON.stringify(record, Object.keys(record).sort())).digest("hex");
+            auditLedger.push({ ...record, sha256Hash });
+            console.log(`[PASS] Indexed Fulfillment Tx: ${log.transactionHash} | SHA-256: ${sha256Hash.substring(0, 16)}...`);
+        }
+    }
+
+    fs.writeFileSync(`seaport-audit-ledger-${Date.now()}.json`, JSON.stringify(auditLedger, null, 2));
+    console.log(`[AUDIT COMPLETE] Exported ${auditLedger.length} verified fulfillment records to local ledger.`);
+}
+
+auditLiveOrderFulfillments();

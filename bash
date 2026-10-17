@@ -1,2 +1,3 @@
+pip install requests beautifulsoup4
 export GITHUB_TOKEN="ghp_your_token_here"
 python github_repo_audit.py --repo owner/repo --output audit_output.json

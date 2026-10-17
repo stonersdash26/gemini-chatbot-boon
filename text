@@ -1,3 +1,17 @@
+[AUDIT] Querying blocks 21400100 to 21400115 for SQLite insertion...
+[PASS] Indexed Tx to SQLite: 0x8799fc604c521f6feca322b8fcaa99903602ba9c1964417cf18463cdc86d9568
+[DATABASE SYNC COMPLETE] Successfully committed 1 new records to audit-ledger.db.
+[PASS] Connected to SQLite Ledger. Tables found: [ 'seaport_audits', 'sqlite_sequence' ]
+[PASS] Total Verified Records in Ledger: 1
+[PASS] Most Recent Audit Entries: [
+  {
+    "blockNumber": 21000000,
+    "transactionHash": "0x8799fc604c521f6feca322b8fcaa99903602ba9c1964417cf18463cdc86d9568",
+    "timestamp": "2026-10-17T07:19:34Z",
+    "sha256Hash": "ef1716a425593e3dcaa65661cf36ef00c748eec46c603b90470b776d44e7cccc"
+  }
+]
+
 [PASS] Protocol Version: 1.6.0
 [PASS] Domain Separator: 0x...
 [PASS] Conduit Controller: 0x00000000F9490004C11Cef243f5400493c00Ad63

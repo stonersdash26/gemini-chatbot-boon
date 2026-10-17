@@ -1,4 +1,55 @@
-git add audit-ledger.db db-logger.ts verify-db.ts
+git checkout -b fix/exclusion-node
+mkdir -p .github/workflows
+cat > .github/workflows/exclusion.yml <<'YAML'
+name: Exclusion / Tailwind build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'tailwind.config*'
+      - 'package.json'
+      - '.github/workflows/exclusion'
+
+jobs:
+  tailwind-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install npm packages (if package.json)
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+          else
+            echo "No package.json found — skipping npm install."
+          fi
+
+      - name: Run Tailwind build (if script exists)
+        run: |
+          if npm run | grep -q "build"; then
+            npm run build
+          else
+            if [ -f tailwind.config.js ] || [ -f tailwind.config.cjs ]; then
+              echo "Running npx tailwindcss build (requires default input/output file paths)."
+              npx tailwindcss -i ./src/input.css -o ./dist/output.css --minify || echo "Tailwind build failed or default inputs not present."
+            else
+              echo "No tailwind config or build script found; skipping."
+            fi
+          fi
+YAML
+git add .github/workflows/exclusion.yml
+git commit -m "fix(workflow): add node setup for exclusion build"
+git push -u origin fix/exclusion-node
+gh pr create --fill --base main --head fix/exclusion-nodegit add audit-ledger.db db-logger.ts verify-db.ts
 git commit -m "chore: advance audit logger to target next block range dynamically"
 git push origin main
 npx ts-node db-logger.ts

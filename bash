@@ -1,3 +1,6 @@
+git add audit-ledger.db db-logger.ts verify-db.ts
+git commit -m "chore: advance audit logger to target next block range dynamically"
+git push origin main
 npx ts-node db-logger.ts
 npx ts-node verify-db.ts
 

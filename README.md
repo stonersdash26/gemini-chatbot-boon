@@ -1,4 +1,4 @@
-git checkout -b fix/audit-ci-setupgit checkout -b fix/audit-ci-setup
+git apply fix-audit-ci.patchgit checkout -b fix/audit-ci-setupgit checkout -b fix/audit-ci-setup
 git apply fix-audit-ci.patch
 npm install
 npx ts-node db-logger.ts

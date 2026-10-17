@@ -1,3 +1,4 @@
+npx ts-node repo-auditor.ts
 import * as https from "https";
 import * as fs from "fs";
 import * as crypto from "crypto";

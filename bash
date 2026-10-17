@@ -1,3 +1,6 @@
+git add audit-summary-*.json generate-report.ts
+git commit -m "chore: add automated cryptographic root hash report generator for Seaport audit ledger"
+git push origin main
 git add .github/workflows/seaport-audit.yml
 git commit -m "ci: add GitHub Actions workflow for automated 6-hour Seaport audit ledger synchronization"
 git push origin main

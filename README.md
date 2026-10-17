@@ -1,3 +1,26 @@
+## Summary
+- add the missing `db-logger.ts` and `verify-db.ts` audit scripts used by CI
+- add required runtime and type dependencies needed for the audit scripts
+- grant workflow `permissions: contents: write` so the commit/push step can succeed
+
+## Why
+The workflow was failing because it executed scripts that did not exist in the repository and attempted to commit changes without the necessary write permission.
+
+## Validation
+I validated the fix locally with:
+- `npm install`
+- `npx ts-node db-logger.ts`
+- `npx ts-node verify-db.ts`
+
+## Notes
+- Make sure the repository secret `RPC_ENDPOINT` is configured if you want to use a private RPC provider.
+- If the GitHub runner fails to build `better-sqlite3`, a CI-portable fallback can be prepared.
+
+## Checklist
+- [ ] workflow runs successfully on push
+- [ ] scheduled run succeeds
+- [ ] `audit-ledger.db` is updated and committed as expected
+- [ ] `RPC_ENDPOINT` secret is set if needed
 Run these exact commands locally to create the branch, add the files, test, push, and open a PR for https://github.com/stonersdash26/gemini-chatbot-boon.
 
 1) Clone and create branch

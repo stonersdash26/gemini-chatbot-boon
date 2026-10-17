@@ -1,3 +1,5 @@
+npx ts-node audit-conduits.ts
+
 import { ethers } from "ethers";
 import * as fs from "fs";
 import * as crypto from "crypto";

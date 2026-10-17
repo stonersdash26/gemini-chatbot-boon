@@ -1,3 +1,18 @@
+name: Bash script
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  run-bash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Execute bash script
+        run: bash bash
 git checkout -b fix/exclusion-node
 mkdir -p .github/workflows
 cat > .github/workflows/exclusion.yml <<'YAML'

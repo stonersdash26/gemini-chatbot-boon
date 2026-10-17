@@ -1,3 +1,4 @@
+npm install better-sqlite3 @types/better-sqlite3
 git add conduit-audit-ledger-*.json
 git commit -m "chore: add conduit allowance audit ledger with SHA-256 validation"
 git push origin main

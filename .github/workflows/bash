@@ -1,4 +1,4 @@
-name: Bash script
+github/workflows/bash.yml
 
 on:
   workflow_dispatch:

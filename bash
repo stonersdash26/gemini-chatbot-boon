@@ -1,6 +1,9 @@
 git add audit-ledger.db db-logger.ts verify-db.ts
 git commit -m "chore: finalize Seaport 1.6 audit ledger integration and SQLite persistence state"
 git push origin main
+git add audit-ledger.db db-logger.ts verify-db.ts
+git commit -m "chore: finalize Seaport 1.6 audit ledger integration and SQLite persistence state"
+git push origin main
 # 1. Execute the persistence audit script locally
 npx ts-node db-logger.ts
 

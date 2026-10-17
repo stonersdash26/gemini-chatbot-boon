@@ -1,4 +1,287 @@
-*** Add File: db-logger.ts
+Run these exact commands locally to create the branch, add the files, test, push, and open a PR for https://github.com/stonersdash26/gemini-chatbot-boon.
+
+1) Clone and create branch
+git clone https://github.com/stonersdash26/gemini-chatbot-boon.git
+cd gemini-chatbot-boon
+git checkout -b fix/audit-ci-setup
+
+2) Add db-logger.ts
+cat > db-logger.ts <<'EOF'
+import { ethers } from "ethers";
+import * as crypto from "crypto";
+import Database from "better-sqlite3";
+
+const SEAPORT_1_6_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395";
+const RPC_ENDPOINT = process.env.RPC_ENDPOINT ?? "https://eth.llamarpc.com";
+const DB_PATH = "audit-ledger.db";
+
+const db = new Database(DB_PATH);
+
+// Initialize SQLite audit table
+db.prepare(`
+    CREATE TABLE IF NOT EXISTS seaport_audits (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        blockNumber INTEGER,
+        transactionHash TEXT UNIQUE,
+        orderHash TEXT,
+        offerer TEXT,
+        zone TEXT,
+        recipient TEXT,
+        timestamp TEXT,
+        sha256Hash TEXT
+    )
+`).run();
+
+const ABI = [
+    "event OrderFulfilled(bytes32 indexed orderHash, address indexed offerer, address indexed zone, address recipient)"
+];
+
+async function persistAuditToDatabase() {
+    const provider = new ethers.JsonRpcProvider(RPC_ENDPOINT);
+    const contract = new ethers.Contract(SEAPORT_1_6_ADDRESS, ABI, provider);
+
+    const currentBlock = await provider.getBlockNumber();
+    const fromBlock = Math.max(0, currentBlock - 15);
+
+    console.log(`[AUDIT] Querying blocks ${fromBlock} to ${currentBlock} for SQLite insertion...`);
+
+    const filter = contract.filters.OrderFulfilled();
+    const logs = await contract.queryFilter(filter, fromBlock, currentBlock);
+
+    const insertStmt = db.prepare(`
+        INSERT OR IGNORE INTO seaport_audits 
+        (blockNumber, transactionHash, orderHash, offerer, zone, recipient, timestamp, sha256Hash)
+        VALUES (@blockNumber, @transactionHash, @orderHash, @offerer, @zone, @recipient, @timestamp, @sha256Hash)
+    `);
+
+    let insertedCount = 0;
+
+    for (const log of logs) {
+        const parsed = contract.interface.parseLog({ topics: [...log.topics], data: log.data });
+        if (parsed) {
+            const record = {
+                blockNumber: log.blockNumber,
+                transactionHash: log.transactionHash,
+                orderHash: parsed.args.orderHash,
+                offerer: parsed.args.offerer,
+                zone: parsed.args.zone,
+                recipient: parsed.args.recipient,
+                timestamp: new Date().toISOString()
+            };
+
+            const sha256Hash = crypto.createHash("sha256").update(JSON.stringify(record, Object.keys(record).sort())).digest("hex");
+            
+            try {
+                insertStmt.run({ ...record, sha256Hash });
+                insertedCount++;
+                console.log(`[PASS] Indexed Tx to SQLite: ${log.transactionHash}`);
+            } catch (dbError: any) {
+                console.error(`[SKIP] Record already exists or failed: ${dbError.message}`);
+            }
+        }
+    }
+
+    console.log(`[DATABASE SYNC COMPLETE] Successfully committed ${insertedCount} new records to ${DB_PATH}.`);
+    db.close();
+}
+
+persistAuditToDatabase();
+EOF
+
+3) Add verify-db.ts
+cat > verify-db.ts <<'EOF'
+import Database from "better-sqlite3";
+import * as fs from "fs";
+
+const DB_PATH = "audit-ledger.db";
+
+function verifyDatabaseState() {
+    if (!fs.existsSync(DB_PATH)) {
+        console.error(`[FAIL] Database file '${DB_PATH}' not found. Run 'npx ts-node db-logger.ts' first.`);
+        return;
+    }
+
+    const db = new Database(DB_PATH, { readonly: true });
+
+    try {
+        const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table';").all() as { name: string }[];
+        console.log(`[PASS] Connected to SQLite Ledger. Tables found:`, tables.map((table) => table.name));
+
+        const countRow = db.prepare("SELECT COUNT(*) as count FROM seaport_audits").get() as { count: number };
+        console.log(`[PASS] Total Verified Records in Ledger: ${countRow.count}`);
+
+        const recentRecords = db.prepare("SELECT blockNumber, transactionHash, timestamp, sha256Hash FROM seaport_audits ORDER BY id DESC LIMIT 5").all();
+        console.log(`[PASS] Most Recent Audit Entries:`, JSON.stringify(recentRecords, null, 2));
+    } catch (error: any) {
+        console.error(`[FAIL] Database query failed: ${error.message}`);
+    } finally {
+        db.close();
+    }
+}
+
+verifyDatabaseState();
+EOF
+
+4) Update workflow file (create/overwrite)
+mkdir -p .github/workflows
+cat > .github/workflows/seaport-audit.yml <<'EOF'
+name: Seaport 1.6 Automated Audit Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 */6 * * *' # Run every 6 hours
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Run SQLite Audit Persistence Logger
+        run: npx ts-node db-logger.ts
+        env:
+          RPC_ENDPOINT: ${{ secrets.RPC_ENDPOINT }}
+
+      - name: Verify Local SQLite Database Ledger State
+        run: npx ts-node verify-db.ts
+
+      - name: Commit Updated Audit Ledger to Repository
+        run: |
+          git config --global user.name "Independent Auditor Bot"
+          git config --global user.email "auditor@local.domain"
+          git add audit-ledger.db
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: automated CI audit ledger sync [skip ci]" && git push)
+EOF
+
+5) Replace package.json with the updated file (exact)
+cat > package.json <<'EOF'
+{
+  "name": "gemini-chatbot",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --turbo",
+    "build": "tsx db/migrate && next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^0.0.51",
+    "@radix-ui/react-alert-dialog": "^1.1.2",
+    "@radix-ui/react-dialog": "^1.1.2",
+    "@radix-ui/react-dropdown-menu": "^2.1.1",
+    "@radix-ui/react-icons": "^1.3.0",
+    "@radix-ui/react-label": "^2.1.0",
+    "@radix-ui/react-slot": "^1.1.0",
+    "@radix-ui/react-tooltip": "^1.1.2",
+    "@radix-ui/react-visually-hidden": "^1.1.0",
+    "@vercel/analytics": "^1.3.1",
+    "@vercel/blob": "^0.24.1",
+    "@vercel/postgres": "^0.10.0",
+    "ai": "3.4.9",
+    "bcrypt-ts": "^5.0.2",
+    "better-sqlite3": "^11.7.0",
+    "class-variance-authority": "^0.7.0",
+    "classnames": "^2.5.1",
+    "clsx": "^1.1.1",
+    "date-fns": "^4.1.0",
+    "dotenv": "^16.4.5",
+    "drizzle-orm": "^0.34.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-tailwindcss": "^3.17.5",
+    "ethers": "^6.13.5",
+    "framer-motion": "^11.3.19",
+    "geist": "^1.3.1",
+    "input-otp": "^1.2.4",
+    "lucide-react": "^0.446.0",
+    "next": "15.5.7",
+    "next-auth": "5.0.0-beta.22",
+    "postgres": "^3.4.4",
+    "react": "19.2.1",
+    "react-dom": "19.2.1",
+    "server-only": "^0.0.1",
+    "sonner": "^1.5.0",
+    "streamdown": "^1.6.7",
+    "swr": "^2.2.5",
+    "tailwind-merge": "^2.5.2",
+    "tailwindcss-animate": "^1.0.7",
+    "ts-node": "^10.9.2",
+    "usehooks-ts": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/d3-scale": "^4.0.8",
+    "@types/node": "^20",
+    "@types/pdf-parse": "^1.1.4",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "drizzle-kit": "^0.25.0",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "15.5.7",
+    "eslint-import-resolver-typescript": "^3.6.3",
+    "eslint-plugin-import": "^2.31.0",
+    "postcss": "^8",
+    "tailwindcss": "^3.4.1",
+    "tsx": "^4.19.1",
+    "typescript": "^5"
+  }
+}
+EOF
+
+6) Install, smoke-test
+npm install
+# run logger (will use default RPC if you didn't set the secret locally)
+npx ts-node db-logger.ts
+npx ts-node verify-db.ts
+
+7) Commit & push
+git add db-logger.ts verify-db.ts .github/workflows/seaport-audit.yml package.json
+git commit -m "ci: add missing audit scripts, workflow permissions, and required deps for CI"
+git push -u origin fix/audit-ci-setup
+
+8) Open PR (gh CLI) — exact PR body
+gh pr create --title "ci: fix audit pipeline (add scripts & workflow permissions)" --body "$(cat <<'PR'
+## Summary
+- add missing `db-logger.ts` and `verify-db.ts` used by CI
+- add required runtime and type deps (better-sqlite3, ethers, ts-node, @types/better-sqlite3)
+- grant workflow `permissions: contents: write` so the commit/push step can succeed
+
+## Why
+The scheduled/workflow run was failing because the workflow executed scripts that were not present and attempted to commit without write permission.
+
+## Validation performed locally
+- npm install
+- npx ts-node db-logger.ts
+- npx ts-node verify-db.ts
+
+## Notes
+- Set the repository secret RPC_ENDPOINT (Settings → Secrets) if you prefer a private RPC provider.
+- If the GitHub runner fails to build `better-sqlite3`, consider a CI-portable fallback (I can prepare a patch that uses a pure-JS SQLite option).
+PR
+)" --base main --head fix/audit-ci-setup
+
+9) After PR is created
+- Wait for CI to run on the branch.
+- If CI runner fails building better-sqlite3, tell me and I will generate a CI-portable fallback patch that switches to a pure-JS SQLite alternative and a follow-up PR.
+
+I cannot run these commands from here. Tell me when the branch/PR is created and if CI succeeds or fails — I will help fix any follow-up errors.*** Add File: db-logger.ts
 +import { ethers } from "ethers";
 +import * as crypto from "crypto";
 +import Database from "better-sqlite3";

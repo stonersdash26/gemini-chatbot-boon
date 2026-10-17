@@ -1,4 +1,6 @@
-Good — here's a CI-portable "better" patch that avoids native SQLite builds. Behavior:
+git clone https://github.com/stonersdash26/gemini-chatbot-boon.git
+cd gemini-chatbot-boon
+git checkout -b fix/audit-ci-portableGood — here's a CI-portable "better" patch that avoids native SQLite builds. Behavior:
 - If better-sqlite3 is installed and available, db-logger/verify-db will use it as before.
 - If better-sqlite3 is not available (typical CI failure), the scripts fall back to a plain JSON ledger file (audit-ledger.json). JSON is text-friendly in CI and needs no native modules.
 - Workflow updated to commit the JSON ledger instead of a binary .db file.

@@ -1,4 +1,376 @@
+I found the root cause in the repo and workflow:
+
+- The workflow references `db-logger.ts` and `verify-db.ts`
+- Those files are not present
+- The workflow uses `ts-node`, but this repo is already set up for `tsx`
+- The missing runtime dependency is `better-sqlite3`
+
+This is the exact fix.
+
+1) Create `db-logger.ts`
+
+```ts
 import Database from "better-sqlite3";
+
+const dbPath = process.env.AUDIT_DB_PATH ?? "audit-ledger.db";
+
+const db = new Database(dbPath);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS audit_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    repo TEXT,
+    branch TEXT,
+    run_id TEXT,
+    rpc_host TEXT,
+    status TEXT,
+    payload TEXT
+  );
+`);
+
+const repo = process.env.GITHUB_REPOSITORY ?? "unknown/repo";
+const branch = process.env.GITHUB_REF_NAME ?? "main";
+const runId = process.env.GITHUB_RUN_ID ?? "local";
+const rpcEndpoint = process.env.RPC_ENDPOINT ?? "";
+const rpcHost = rpcEndpoint
+  ? (() => {
+      try {
+        return new URL(rpcEndpoint).hostname;
+      } catch {
+        return "invalid-url";
+      }
+    })()
+  : "not-configured";
+const now = new Date().toISOString();
+
+const payload = JSON.stringify(
+  {
+    created_at: now,
+    repo,
+    branch,
+    run_id: runId,
+    rpc_endpoint: rpcEndpoint || null,
+    rpc_host: rpcHost,
+    status: rpcEndpoint ? "configured" : "placeholder",
+  },
+  null,
+  2,
+);
+
+const insert = db.prepare(`
+  INSERT INTO audit_ledger (created_at, repo, branch, run_id, rpc_host, status, payload)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`);
+
+insert.run(
+  now,
+  repo,
+  branch,
+  runId,
+  rpcHost,
+  rpcEndpoint ? "configured" : "placeholder",
+  payload
+);
+
+console.log(`Audit ledger initialized at ${dbPath}`);
+console.log(`Recorded run ${runId} for ${repo}@${branch}`);
+
+db.close();
+```
+
+2) Create `verify-db.ts`
+
+```ts
+import Database from "better-sqlite3";
+
+const dbPath = process.env.AUDIT_DB_PATH ?? "audit-ledger.db";
+const db = new Database(dbPath);
+
+const tableCheck = db
+  .prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'audit_ledger'
+  `)
+  .get();
+
+if (!tableCheck) {
+  db.close();
+  throw new Error("audit_ledger table not found in database");
+}
+
+const rowCount = db
+  .prepare(`SELECT COUNT(*) AS count FROM audit_ledger`)
+  .get() as { count: number };
+
+if (rowCount.count < 1) {
+  db.close();
+  throw new Error("audit_ledger is empty");
+}
+
+const latest = db
+  .prepare(`
+    SELECT repo, branch, created_at, run_id
+    FROM audit_ledger
+    ORDER BY id DESC
+    LIMIT 1
+  `)
+  .get() as { repo: string; branch: string; created_at: string; run_id: string };
+
+console.log(`Verified ledger database at ${dbPath}`);
+console.log(`Row count: ${rowCount.count}`);
+console.log(`Latest audit row: ${JSON.stringify(latest)}`);
+
+db.close();
+```
+
+3) Add the dependency in `package.json`
+
+Add this under `dependencies`:
+
+```json
+"better-sqlite3": "^11.7.0"
+```
+
+4) Replace the workflow file with this
+
+```yaml
+name: Seaport 1.6 Automated Audit Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: Install Dependencies
+      run: npm install
+
+    - name: Check expected audit files exist
+      run: |
+        echo "Workspace files:"
+        ls -la
+        test -f db-logger.ts && echo "db-logger.ts exists" || echo "db-logger.ts missing"
+        test -f verify-db.ts && echo "verify-db.ts exists" || echo "verify-db.ts missing"
+
+    - name: Run SQLite Audit Persistence Logger
+      run: npx tsx db-logger.ts
+      env:
+        RPC_ENDPOINT: ${{ secrets.RPC_ENDPOINT }}
+
+    - name: Verify Local SQLite Database Ledger State
+      run: npx tsx verify-db.ts
+
+    - name: Commit Updated Audit Ledger to Repository
+      run: |
+        git config --global user.name "Independent Auditor Bot"
+        git config --global user.email "auditor@local.domain"
+
+        if [ -f audit-ledger.db ]; then
+          git add audit-ledger.db
+          git diff --cached --quiet || (git commit -m "chore: automated CI audit ledger sync [skip ci]" && git push)
+        else
+          echo "audit-ledger.db was not created; skipping commit"
+        fi
+```
+
+5) Apply locally
+
+```bash
+cd /path/to/gemini-chatbot-boon
+
+npm install better-sqlite3
+
+cat > db-logger.ts <<'EOF'
+import Database from "better-sqlite3";
+
+const dbPath = process.env.AUDIT_DB_PATH ?? "audit-ledger.db";
+
+const db = new Database(dbPath);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS audit_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    repo TEXT,
+    branch TEXT,
+    run_id TEXT,
+    rpc_host TEXT,
+    status TEXT,
+    payload TEXT
+  );
+`);
+
+const repo = process.env.GITHUB_REPOSITORY ?? "unknown/repo";
+const branch = process.env.GITHUB_REF_NAME ?? "main";
+const runId = process.env.GITHUB_RUN_ID ?? "local";
+const rpcEndpoint = process.env.RPC_ENDPOINT ?? "";
+const rpcHost = rpcEndpoint
+  ? (() => {
+      try {
+        return new URL(rpcEndpoint).hostname;
+      } catch {
+        return "invalid-url";
+      }
+    })()
+  : "not-configured";
+const now = new Date().toISOString();
+
+const payload = JSON.stringify(
+  {
+    created_at: now,
+    repo,
+    branch,
+    run_id: runId,
+    rpc_endpoint: rpcEndpoint || null,
+    rpc_host: rpcHost,
+    status: rpcEndpoint ? "configured" : "placeholder",
+  },
+  null,
+  2,
+);
+
+const insert = db.prepare(`
+  INSERT INTO audit_ledger (created_at, repo, branch, run_id, rpc_host, status, payload)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`);
+
+insert.run(
+  now,
+  repo,
+  branch,
+  runId,
+  rpcHost,
+  rpcEndpoint ? "configured" : "placeholder",
+  payload
+);
+
+console.log(`Audit ledger initialized at ${dbPath}`);
+console.log(`Recorded run ${runId} for ${repo}@${branch}`);
+
+db.close();
+EOF
+
+cat > verify-db.ts <<'EOF'
+import Database from "better-sqlite3";
+
+const dbPath = process.env.AUDIT_DB_PATH ?? "audit-ledger.db";
+const db = new Database(dbPath);
+
+const tableCheck = db
+  .prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'audit_ledger'
+  `)
+  .get();
+
+if (!tableCheck) {
+  db.close();
+  throw new Error("audit_ledger table not found in database");
+}
+
+const rowCount = db
+  .prepare(`SELECT COUNT(*) AS count FROM audit_ledger`)
+  .get() as { count: number };
+
+if (rowCount.count < 1) {
+  db.close();
+  throw new Error("audit_ledger is empty");
+}
+
+const latest = db
+  .prepare(`
+    SELECT repo, branch, created_at, run_id
+    FROM audit_ledger
+    ORDER BY id DESC
+    LIMIT 1
+  `)
+  .get() as { repo: string; branch: string; created_at: string; run_id: string };
+
+console.log(`Verified ledger database at ${dbPath}`);
+console.log(`Row count: ${rowCount.count}`);
+console.log(`Latest audit row: ${JSON.stringify(latest)}`);
+
+db.close();
+EOF
+
+mkdir -p .github/workflows
+cat > .github/workflows/seaport-audit.yml <<'YAML'
+name: Seaport 1.6 Automated Audit Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: Install Dependencies
+      run: npm install
+
+    - name: Check expected audit files exist
+      run: |
+        echo "Workspace files:"
+        ls -la
+        test -f db-logger.ts && echo "db-logger.ts exists" || echo "db-logger.ts missing"
+        test -f verify-db.ts && echo "verify-db.ts exists" || echo "verify-db.ts missing"
+
+    - name: Run SQLite Audit Persistence Logger
+      run: npx tsx db-logger.ts
+      env:
+        RPC_ENDPOINT: ${{ secrets.RPC_ENDPOINT }}
+
+    - name: Verify Local SQLite Database Ledger State
+      run: npx tsx verify-db.ts
+
+    - name: Commit Updated Audit Ledger to Repository
+      run: |
+        git config --global user.name "Independent Auditor Bot"
+        git config --global user.email "auditor@local.domain"
+
+        if [ -f audit-ledger.db ]; then
+          git add audit-ledger.db
+          git diff --cached --quiet || (git commit -m "chore: automated CI audit ledger sync [skip ci]" && git push)
+        else
+          echo "audit-ledger.db was not created; skipping commit"
+        fi
+YAML
+
+git add db-logger.ts verify-db.ts .github/workflows/seaport-audit.yml package.json
+git commit -m "fix: add audit ledger scripts and workflow"
+git push origin main
+```
+
+This should resolve the workflow errors. If you want, I can next help you validate the scripts locally before pushing them.import Database from "better-sqlite3";
 
 const dbPath = process.env.AUDIT_DB_PATH ?? "audit-ledger.db";
 

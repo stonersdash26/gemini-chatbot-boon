@@ -1,4 +1,62 @@
-- name: Run SQLite Audit Persistence Logger
+import Database from "better-sqlite3";
+
+const dbPath = process.env.AUDIT_DB_PATH ?? "audit-ledger.db";
+
+const db = new Database(dbPath);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS audit_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    repo TEXT,
+    branch TEXT,
+    run_id TEXT,
+    rpc_host TEXT,
+    status TEXT,
+    payload TEXT
+  );
+`);
+
+const repo = process.env.GITHUB_REPOSITORY ?? "unknown/repo";
+const branch = process.env.GITHUB_REF_NAME ?? "main";
+const runId = process.env.GITHUB_RUN_ID ?? "local";
+const rpcEndpoint = process.env.RPC_ENDPOINT ?? "";
+const rpcHost = rpcEndpoint
+  ? (() => {
+      try {
+        return new URL(rpcEndpoint).hostname;
+      } catch {
+        return "invalid-url";
+      }
+    })()
+  : "not-configured";
+const now = new Date().toISOString();
+
+const payload = JSON.stringify(
+  {
+    created_at: now,
+    repo,
+    branch,
+    run_id: runId,
+    rpc_endpoint: rpcEndpoint || null,
+    rpc_host: rpcHost,
+    status: rpcEndpoint ? "configured" : "placeholder",
+  },
+  null,
+  2,
+);
+
+const insert = db.prepare(`
+  INSERT INTO audit_ledger (created_at, repo, branch, run_id, rpc_host, status, payload)
+  VALUES (?, ?, ?, ?, ?, ?, ?)
+`);
+
+insert.run(now, repo, branch, runId, rpcHost, rpcEndpoint ? "configured" : "placeholder", payload);
+
+console.log(`Audit ledger initialized at ${dbPath}`);
+console.log(`Recorded run ${runId} for ${repo}@${branch}`);
+
+db.close();- name: Run SQLite Audit Persistence Logger
   run: npx tsx db-logger.ts
   env:
     RPC_ENDPOINT: ${{ secrets.RPC_ENDPOINT }}

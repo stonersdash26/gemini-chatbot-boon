@@ -1,4 +1,261 @@
-## Summary
+Good — here's a CI-portable "better" patch that avoids native SQLite builds. Behavior:
+- If better-sqlite3 is installed and available, db-logger/verify-db will use it as before.
+- If better-sqlite3 is not available (typical CI failure), the scripts fall back to a plain JSON ledger file (audit-ledger.json). JSON is text-friendly in CI and needs no native modules.
+- Workflow updated to commit the JSON ledger instead of a binary .db file.
+- package.json removed the forced better-sqlite3 dependency (so runners won't try to compile native modules). It still includes ethers and ts-node.
+
+Apply the patch on your feature branch (recommended: fix/audit-ci-setup). Save this as fix-audit-ci-portable.patch and apply with git apply.
+
+-----BEGIN PATCH-----
+*** Add File: db-logger.ts
++import { ethers } from "ethers";
++import * as crypto from "crypto";
++import * as fs from "fs";
++import * as path from "path";
++
++const SEAPORT_1_6_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395";
++const RPC_ENDPOINT = process.env.RPC_ENDPOINT ?? "https://eth.llamarpc.com";
++const DB_PATH = "audit-ledger.db";
++const JSON_LEDGER = "audit-ledger.json";
++
++async function run() {
++  // Try to use better-sqlite3 if present (optional)
++  let BetterSqlite3: any = null;
++  try {
++    // dynamic require so package.json doesn't need to force native build
++    // eslint-disable-next-line @typescript-eslint/no-var-requires
++    BetterSqlite3 = require("better-sqlite3");
++    console.log("[INFO] better-sqlite3 available — using SQLite persistence.");
++  } catch {
++    console.log("[INFO] better-sqlite3 not available — falling back to JSON ledger.");
++  }
++
++  const provider = new ethers.JsonRpcProvider(RPC_ENDPOINT);
++  const contract = new ethers.Contract(
++    SEAPORT_1_6_ADDRESS,
++    [
++      "event OrderFulfilled(bytes32 indexed orderHash, address indexed offerer, address indexed zone, address recipient)"
++    ],
++    provider
++  );
++
++  const currentBlock = await provider.getBlockNumber();
++  const fromBlock = Math.max(0, currentBlock - 15);
++  console.log(`[AUDIT] Querying blocks ${fromBlock} to ${currentBlock}...`);
++
++  const logs = await contract.queryFilter(contract.filters.OrderFulfilled(), fromBlock, currentBlock);
++  const parsedRecords: any[] = [];
++
++  for (const log of logs) {
++    try {
++      const parsed = contract.interface.parseLog({ topics: [...log.topics], data: log.data });
++      if (!parsed) continue;
++      const record = {
++        blockNumber: log.blockNumber,
++        transactionHash: log.transactionHash,
++        orderHash: parsed.args.orderHash,
++        offerer: parsed.args.offerer,
++        zone: parsed.args.zone,
++        recipient: parsed.args.recipient,
++        timestamp: new Date().toISOString()
++      };
++      const sha256Hash = crypto.createHash("sha256").update(JSON.stringify(record, Object.keys(record).sort())).digest("hex");
++      parsedRecords.push({ ...record, sha256Hash });
++    } catch (e: any) {
++      console.error("[WARN] Failed to parse log:", e?.message ?? e);
++    }
++  }
++
++  if (parsedRecords.length === 0) {
++    console.log("[AUDIT] No new records found in scanned blocks.");
++    return;
++  }
++
++  if (BetterSqlite3) {
++    const db = new BetterSqlite3(DB_PATH);
++    db.prepare(`
++      CREATE TABLE IF NOT EXISTS seaport_audits (
++        id INTEGER PRIMARY KEY AUTOINCREMENT,
++        blockNumber INTEGER,
++        transactionHash TEXT UNIQUE,
++        orderHash TEXT,
++        offerer TEXT,
++        zone TEXT,
++        recipient TEXT,
++        timestamp TEXT,
++        sha256Hash TEXT
++      )
++    `).run();
++
++    const insert = db.prepare(`
++      INSERT OR IGNORE INTO seaport_audits 
++      (blockNumber, transactionHash, orderHash, offerer, zone, recipient, timestamp, sha256Hash)
++      VALUES (@blockNumber, @transactionHash, @orderHash, @offerer, @zone, @recipient, @timestamp, @sha256Hash)
++    `);
++
++    let inserted = 0;
++    for (const r of parsedRecords) {
++      try {
++        insert.run(r);
++        inserted++;
++        console.log(`[PASS] Indexed Tx to SQLite: ${r.transactionHash}`);
++      } catch (err: any) {
++        console.error(`[SKIP] SQLite insert failed: ${err?.message ?? err}`);
++      }
++    }
++    db.close();
++    console.log(`[DATABASE] Committed ${inserted} records to ${DB_PATH}.`);
++  } else {
++    // JSON fallback
++    const file = path.resolve(JSON_LEDGER);
++    let existing: any[] = [];
++    if (fs.existsSync(file)) {
++      try {
++        existing = JSON.parse(fs.readFileSync(file, "utf8"));
++        if (!Array.isArray(existing)) existing = [];
++      } catch (e) {
++        console.error("[WARN] Could not parse existing JSON ledger, starting fresh.");
++        existing = [];
++      }
++    }
++
++    // Map by transactionHash to dedupe
++    const map = new Map(existing.map((it: any) => [it.transactionHash, it]));
++    let added = 0;
++    for (const r of parsedRecords) {
++      if (!map.has(r.transactionHash)) {
++        map.set(r.transactionHash, r);
++        added++;
++        console.log(`[PASS] Indexed Tx to JSON ledger: ${r.transactionHash}`);
++      } else {
++        // skip duplicates
++      }
++    }
++
++    const out = Array.from(map.values()).sort((a: any, b: any) => a.id - b.id || (a.blockNumber - b.blockNumber));
++    fs.writeFileSync(file, JSON.stringify(out, null, 2));
++    console.log(`[JSON LEDGER] Appended ${added} new records to ${JSON_LEDGER}.`);
++  }
++}
++
++run().catch((err) => {
++  console.error("[FATAL] db-logger failed:", err?.message ?? err);
++  process.exitCode = 1;
++});
++
+*** Add File: verify-db.ts
++import * as fs from "fs";
++import * as path from "path";
++
++const DB_PATH = "audit-ledger.db";
++const JSON_LEDGER = "audit-ledger.json";
++
++function verify() {
++  // Try to use better-sqlite3 if present
++  try {
++    // eslint-disable-next-line @typescript-eslint/no-var-requires
++    const BetterSqlite3 = require("better-sqlite3");
++    const db = new BetterSqlite3(DB_PATH, { readonly: true });
++    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table';").all();
++    console.log("[PASS] Connected to SQLite Ledger. Tables:", tables.map((t: any) => t.name));
++    const countRow = db.prepare("SELECT COUNT(*) as count FROM seaport_audits").get();
++    console.log("[PASS] Total Verified Records in Ledger:", countRow.count);
++    const recent = db.prepare("SELECT blockNumber, transactionHash, timestamp, sha256Hash FROM seaport_audits ORDER BY id DESC LIMIT 5").all();
++    console.log("[PASS] Most Recent Audit Entries:", JSON.stringify(recent, null, 2));
++    db.close();
++    return;
++  } catch {
++    // fall through to JSON
++  }
++
++  const file = path.resolve(JSON_LEDGER);
++  if (!fs.existsSync(file)) {
++    console.error(`[FAIL] No ledger file found (${JSON_LEDGER}). Run 'npx ts-node db-logger.ts' first.`);
++    process.exitCode = 1;
++    return;
++  }
++
++  try {
++    const arr = JSON.parse(fs.readFileSync(file, "utf8"));
++    if (!Array.isArray(arr)) {
++      console.error("[FAIL] Ledger file malformed (not an array).");
++      process.exitCode = 1;
++      return;
++    }
++    console.log("[PASS] Connected to JSON ledger. Total records:", arr.length);
++    const recent = arr.slice(-5).reverse().map((r: any) => ({ blockNumber: r.blockNumber, transactionHash: r.transactionHash, timestamp: r.timestamp, sha256Hash: r.sha256Hash }));
++    console.log("[PASS] Most Recent Audit Entries:", JSON.stringify(recent, null, 2));
++  } catch (e: any) {
++    console.error("[FAIL] Could not read JSON ledger:", e?.message ?? e);
++    process.exitCode = 1;
++  }
++}
++
++verify();
++
+*** Update File: .github/workflows/seaport-audit.yml
+@@
+-      - name: Commit Updated Audit Ledger to Repository
+-        run: |
+-          git config --global user.name "Independent Auditor Bot"
+-          git config --global user.email "auditor@local.domain"
+-          git add audit-ledger.db
+-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: automated CI audit ledger sync [skip ci]" && git push)
++      - name: Commit Updated Audit Ledger to Repository
++        run: |
++          git config --global user.name "Independent Auditor Bot"
++          git config --global user.email "auditor@local.domain"
++          # Prefer text ledger (JSON) for CI portability; fallback to DB if available
++          if [ -f audit-ledger.json ]; then
++            git add audit-ledger.json
++          elif [ -f audit-ledger.db ]; then
++            git add audit-ledger.db
++          fi
++          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: automated CI audit ledger sync [skip ci]" && git push)
+*** Update File: package.json
+@@
+-    "better-sqlite3": "^11.7.0",
++    /* better-sqlite3 is optional and NOT required by default to avoid native build failures in CI; \
++       if you want native SQLite, install it locally or add it to package.json and the runner. */
+@@
+-    "ethers": "^6.13.5",
++    "ethers": "^6.13.5",
+@@
+-    "ts-node": "^10.9.2",
++    "ts-node": "^10.9.2",
+*** End Patch
+-----END PATCH-----
+
+How to apply (recommended flow)
+1) Create & switch branch
+- git checkout -b fix/audit-ci-portable
+
+2) Save patch and apply
+- Save the patch text above into fix-audit-ci-portable.patch
+- git apply fix-audit-ci-portable.patch
+
+3) Install & smoke-test locally
+- npm install
+- npx ts-node db-logger.ts        # will use JSON fallback unless you install better-sqlite3 locally
+- npx ts-node verify-db.ts
+
+4) Commit & push
+- git add .
+- git commit -m "ci: make audit pipeline CI-portable (JSON fallback; optional better-sqlite3 support)"
+- git push -u origin fix/audit-ci-portable
+
+5) Open a PR using your preferred method (gh CLI or GitHub UI). Use the PR body from earlier (I can paste it again).
+
+Notes & recommendations
+- This patch intentionally avoids adding better-sqlite3 to package.json by default so GitHub Actions runners won't attempt to compile native modules. If you want native sqlite in environments where it's supported, you can still install better-sqlite3 locally or add it as an optional dependency.
+- JSON ledger is easier to diff/inspect in PRs and in CI logs; if you prefer binary DB persistence, the optional path still works when better-sqlite3 is available.
+- If you want, I can:
+  - produce the complete updated package.json file (with removed better-sqlite3) for you to replace, or
+  - produce a PR body and checklist for this branch ready to paste into GitHub.
+
+Do you want me to:
+- create the exact package.json replacement too, or
+- produce the PR body/checklist for this new branch?## Summary
 - add the missing `db-logger.ts` and `verify-db.ts` audit scripts used by CI
 - add required runtime and type dependencies needed for the audit scripts
 - grant workflow `permissions: contents: write` so the commit/push step can succeed

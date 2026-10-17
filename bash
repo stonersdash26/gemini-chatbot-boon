@@ -1,3 +1,8 @@
+# 1. Execute the persistence audit script locally
+npx ts-node db-logger.ts
+
+# 2. Run the database state verification script to confirm SQLite record insertion
+npx ts-node verify-db.ts
 npx ts-node db-logger.ts
 npm install better-sqlite3 @types/better-sqlite3
 git add conduit-audit-ledger-*.json

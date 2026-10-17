@@ -1,3 +1,62 @@
+import * as https from "https";
+import * as fs from "fs";
+import * as crypto from "crypto";
+
+const TARGET_URL = "https://raw.githubusercontent.com/ProjectOpenSea/seaport/main/README.md";
+
+interface RepoAuditRecord {
+    jurisdiction: string;
+    targetUrl: string;
+    timestamp: string;
+    statusCode?: number;
+    latencyMs: number;
+    status: "PASS" | "FAIL";
+    error?: string;
+    sha256Hash?: string;
+}
+
+async function auditRepositoryTarget() {
+    const startTime = performance.now();
+    const timestamp = new Date().toISOString();
+
+    https.get(TARGET_URL, { headers: { "User-Agent": "Independent-Auditor-Bot" } }, (res) => {
+        const latencyMs = Math.round(performance.now() - startTime);
+        let data = "";
+
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => {
+            const record: RepoAuditRecord = {
+                jurisdiction: "Seaport Official Repository Scope",
+                targetUrl: TARGET_URL,
+                timestamp,
+                statusCode: res.statusCode,
+                latencyMs,
+                status: res.statusCode === 200 ? "PASS" : "FAIL"
+            };
+
+            record.sha256Hash = crypto
+                .createHash("sha256")
+                .update(JSON.stringify(record, Object.keys(record).sort()))
+                .digest("hex");
+
+            console.log(JSON.stringify(record, null, 2));
+            fs.writeFileSync(`repo-audit-${Date.now()}.json`, JSON.stringify(record, null, 2));
+        });
+    }).on("error", (err) => {
+        const latencyMs = Math.round(performance.now() - startTime);
+        const failRecord: RepoAuditRecord = {
+            jurisdiction: "Seaport Official Repository Scope",
+            targetUrl: TARGET_URL,
+            timestamp,
+            latencyMs,
+            status: "FAIL",
+            error: err.message
+        };
+        console.error(JSON.stringify(failRecord, null, 2));
+    });
+}
+
+auditRepositoryTarget();
 {
   "jurisdiction": "Seaport Official Repository Scope",
   "targetUrl": "https://github.com/ProjectOpenSea/seaport/blob/refs%2Fheads%2Fmain/README.md",

@@ -1,4 +1,5 @@
 npx ts-node db-logger.ts
+npx ts-node verify-db.ts
 
 git add audit-summary-*.json generate-report.ts
 git commit -m "chore: commit cryptographic audit summary report and generator script"

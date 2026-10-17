@@ -1,3 +1,4 @@
+pip install requests beautifulsoup4
 # Create a dedicated directory
 mkdir seaport_audit
 cd seaport_audit

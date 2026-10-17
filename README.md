@@ -1,4 +1,11 @@
-import { ethers } from "ethers";
+git checkout -b fix/audit-ci-setup
+git apply fix-audit-ci.patch
+npm install
+npx ts-node db-logger.ts
+npx ts-node verify-db.ts
+git add .
+git commit -m "ci: add missing audit scripts, workflow permissions, and required deps for CI"
+git push -u origin fix/audit-ci-setupimport { ethers } from "ethers";
 import * as crypto from "crypto";
 import Database from "better-sqlite3";
 

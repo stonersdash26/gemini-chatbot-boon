@@ -1,3 +1,11 @@
+{
+  "jurisdiction": "Seaport Official Repository Scope",
+  "targetUrl": "https://github.com/ProjectOpenSea/seaport/blob/refs%2Fheads%2Fmain/README.md",
+  "timestamp": "2026-10-17T07:05:49Z",
+  "latencyMs": 68,
+  "status": "FAIL",
+  "error": "Sandbox network isolation DNS lookup failure"
+}
 pip install requests beautifulsoup4
 # Create a dedicated directory
 mkdir seaport_audit

@@ -1,3 +1,55 @@
+import { ethers } from "ethers";
+import * as fs from "fs";
+import * as crypto from "crypto";
+
+const SEAPORT_1_6_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395";
+const CONDUIT_CONTROLLER = "0x00000000F9490004C11Cef243f5400493c00Ad63";
+const RPC_ENDPOINT = "https://eth.llamarpc.com";
+
+const ABI = [
+    "event OrderFulfilled(bytes32 indexed orderHash, address indexed offerer, address indexed zone, address recipient)",
+    "event NewConduit(address indexed conduit, address indexed conduitKey)"
+];
+
+async function auditConduitsAndFulfillments() {
+    const provider = new ethers.JsonRpcProvider(RPC_ENDPOINT);
+    const seaportContract = new ethers.Contract(SEAPORT_1_6_ADDRESS, ABI, provider);
+    const controllerContract = new ethers.Contract(CONDUIT_CONTROLLER, ABI, provider);
+
+    const currentBlock = await provider.getBlockNumber();
+    const fromBlock = currentBlock - 10;
+
+    console.log(`[AUDIT] Scanning blocks ${fromBlock} to ${currentBlock} for Seaport & Conduit telemetry...`);
+
+    const fulfillmentFilter = seaportContract.filters.OrderFulfilled();
+    const logs = await seaportContract.queryFilter(fulfillmentFilter, fromBlock, currentBlock);
+    
+    const auditLedger: any[] = [];
+
+    for (const log of logs) {
+        const parsed = seaportContract.interface.parseLog({ topics: [...log.topics], data: log.data });
+        if (parsed) {
+            const record = {
+                blockNumber: log.blockNumber,
+                transactionHash: log.transactionHash,
+                orderHash: parsed.args.orderHash,
+                offerer: parsed.args.offerer,
+                zone: parsed.args.zone,
+                recipient: parsed.args.recipient,
+                timestamp: new Date().toISOString()
+            };
+
+            const sha256Hash = crypto.createHash("sha256").update(JSON.stringify(record, Object.keys(record).sort())).digest("hex");
+            auditLedger.push({ ...record, sha256Hash });
+        }
+    }
+
+    const filename = `conduit-audit-ledger-${Date.now()}.json`;
+    fs.writeFileSync(filename, JSON.stringify(auditLedger, null, 2));
+    console.log(`[PASS] Exported ${auditLedger.length} verified records to ${filename}`);
+}
+
+auditConduitsAndFulfillments();
 # 1. Run the event audit script
 npx ts-node audit-events.ts
 

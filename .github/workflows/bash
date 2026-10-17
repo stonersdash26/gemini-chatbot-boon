@@ -1,4 +1,4 @@
-github/workflows/bash.yml
+gh run view $(gh run list --repo stonersdash26/docket-odyssey-deprivation-of-liberty-Sullivan-county-Indiana- --workflow audit-sync.yml --limit 1 --json databaseId --jq '.[0].databaseId') --repo stonersdash26/docket-odyssey-deprivation-of-liberty-Sullivan-county-Indiana- --loggithub/workflows/bash.yml
 
 on:
   workflow_dispatch:

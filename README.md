@@ -1,3 +1,180 @@
+*** Add File: db-logger.ts
++import { ethers } from "ethers";
++import * as crypto from "crypto";
++import Database from "better-sqlite3";
++
++const SEAPORT_1_6_ADDRESS = "0x0000000000000068F116a894984e2DB1123eB395";
++const RPC_ENDPOINT = process.env.RPC_ENDPOINT ?? "https://eth.llamarpc.com";
++const DB_PATH = "audit-ledger.db";
++
++const db = new Database(DB_PATH);
++
++// Initialize SQLite audit table
++db.prepare(`
++    CREATE TABLE IF NOT EXISTS seaport_audits (
++        id INTEGER PRIMARY KEY AUTOINCREMENT,
++        blockNumber INTEGER,
++        transactionHash TEXT UNIQUE,
++        orderHash TEXT,
++        offerer TEXT,
++        zone TEXT,
++        recipient TEXT,
++        timestamp TEXT,
++        sha256Hash TEXT
++    )
++`).run();
++
++const ABI = [
++    "event OrderFulfilled(bytes32 indexed orderHash, address indexed offerer, address indexed zone, address recipient)"
++];
++
++async function persistAuditToDatabase() {
++    const provider = new ethers.JsonRpcProvider(RPC_ENDPOINT);
++    const contract = new ethers.Contract(SEAPORT_1_6_ADDRESS, ABI, provider);
++
++    const currentBlock = await provider.getBlockNumber();
++    const fromBlock = Math.max(0, currentBlock - 15);
++
++    console.log(`[AUDIT] Querying blocks ${fromBlock} to ${currentBlock} for SQLite insertion...`);
++
++    const filter = contract.filters.OrderFulfilled();
++    const logs = await contract.queryFilter(filter, fromBlock, currentBlock);
++
++    const insertStmt = db.prepare(`
++        INSERT OR IGNORE INTO seaport_audits 
++        (blockNumber, transactionHash, orderHash, offerer, zone, recipient, timestamp, sha256Hash)
++        VALUES (@blockNumber, @transactionHash, @orderHash, @offerer, @zone, @recipient, @timestamp, @sha256Hash)
++    `);
++
++    let insertedCount = 0;
++
++    for (const log of logs) {
++        const parsed = contract.interface.parseLog({ topics: [...log.topics], data: log.data });
++        if (parsed) {
++            const record = {
++                blockNumber: log.blockNumber,
++                transactionHash: log.transactionHash,
++                orderHash: parsed.args.orderHash,
++                offerer: parsed.args.offerer,
++                zone: parsed.args.zone,
++                recipient: parsed.args.recipient,
++                timestamp: new Date().toISOString()
++            };
++
++            const sha256Hash = crypto.createHash("sha256").update(JSON.stringify(record, Object.keys(record).sort())).digest("hex");
++            
++            try {
++                insertStmt.run({ ...record, sha256Hash });
++                insertedCount++;
++                console.log(`[PASS] Indexed Tx to SQLite: ${log.transactionHash}`);
++            } catch (dbError: any) {
++                console.error(`[SKIP] Record already exists or failed: ${dbError.message}`);
++            }
++        }
++    }
++
++    console.log(`[DATABASE SYNC COMPLETE] Successfully committed ${insertedCount} new records to ${DB_PATH}.`);
++    db.close();
++}
++
++persistAuditToDatabase();
++
+*** Add File: verify-db.ts
++import Database from "better-sqlite3";
++import * as fs from "fs";
++
++const DB_PATH = "audit-ledger.db";
++
++function verifyDatabaseState() {
++    if (!fs.existsSync(DB_PATH)) {
++        console.error(`[FAIL] Database file '${DB_PATH}' not found. Run 'npx ts-node db-logger.ts' first.`);
++        return;
++    }
++
++    const db = new Database(DB_PATH, { readonly: true });
++
++    try {
++        const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table';").all() as { name: string }[];
++        console.log(`[PASS] Connected to SQLite Ledger. Tables found:`, tables.map((table) => table.name));
++
++        const countRow = db.prepare("SELECT COUNT(*) as count FROM seaport_audits").get() as { count: number };
++        console.log(`[PASS] Total Verified Records in Ledger: ${countRow.count}`);
++
++        const recentRecords = db.prepare("SELECT blockNumber, transactionHash, timestamp, sha256Hash FROM seaport_audits ORDER BY id DESC LIMIT 5").all();
++        console.log(`[PASS] Most Recent Audit Entries:`, JSON.stringify(recentRecords, null, 2));
++    } catch (error: any) {
++        console.error(`[FAIL] Database query failed: ${error.message}`);
++    } finally {
++        db.close();
++    }
++}
++
++verifyDatabaseState();
++
+*** Add File: .github/workflows/seaport-audit.yml
++name: Seaport 1.6 Automated Audit Pipeline
++
++on:
++  push:
++    branches: [ "main" ]
++  schedule:
++    - cron: '0 */6 * * *' # Run every 6 hours
++
++permissions:
++  contents: write
++
++jobs:
++  audit:
++    runs-on: ubuntu-latest
++
++    steps:
++      - name: Checkout Repository
++        uses: actions/checkout@v4
++
++      - name: Setup Node.js
++        uses: actions/setup-node@v4
++        with:
++          node-version: '20'
++          cache: 'npm'
++
++      - name: Install Dependencies
++        run: npm install
++
++      - name: Run SQLite Audit Persistence Logger
++        run: npx ts-node db-logger.ts
++        env:
++          RPC_ENDPOINT: ${{ secrets.RPC_ENDPOINT }}
++
++      - name: Verify Local SQLite Database Ledger State
++        run: npx ts-node verify-db.ts
++
++      - name: Commit Updated Audit Ledger to Repository
++        run: |
++          git config --global user.name "Independent Auditor Bot"
++          git config --global user.email "auditor@local.domain"
++          git add audit-ledger.db
++          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: automated CI audit ledger sync [skip ci]" && git push)
++
+*** Update File: package.json
+@@
+   "dependencies": {
+@@
+-    "bcrypt-ts": "^5.0.2",
++    "bcrypt-ts": "^5.0.2",
++    "better-sqlite3": "^11.7.0",
+@@
+-    "framer-motion": "^11.3.19",
++    "framer-motion": "^11.3.19",
++    "ethers": "^6.13.5",
+@@
+-    "usehooks-ts": "^3.1.0",
++    "ts-node": "^10.9.2",
++    "usehooks-ts": "^1.0.0",
+@@
+   "devDependencies": {
++    "@types/better-sqlite3": "^7.6.0",
+     "@types/d3-scale": "^4.0.8",
+*** End Patch
 git apply fix-audit-ci.patchgit checkout -b fix/audit-ci-setupgit checkout -b fix/audit-ci-setup
 git apply fix-audit-ci.patch
 npm install

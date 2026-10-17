@@ -1,4 +1,7 @@
 git add audit-summary-*.json generate-report.ts
+git commit -m "chore: commit cryptographic audit summary report and generator script"
+git push origin main
+git add audit-summary-*.json generate-report.ts
 git commit -m "chore: execute cryptographic audit summary report generation for Seaport ledger"
 git push origin main
 git add audit-summary-*.json generate-report.ts
